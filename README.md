@@ -21,7 +21,7 @@ I use Linux. Tested on Arch, Debian and on WSL2 Debian.
 ## Tools
 **Each CLI tool has a `--help` option that will show you how to use it. You can also check the code for more details.**
 
-- `fit_glm` --> Since I do not trust how FSL fits GLMs and sometimes the documentation is a bit lacking, here you go. *I use it for fitting my GLMs.* Works with design matrices and contrast matrices in `.txt` format (**not** in FSL's format!). This code is largely based on Ibai Diez's MATLAB code (thank you Ibai for letting me write my own Python version c:). The list of output files, for each contrast:
+- `fit_glm` --> Since I do not trust how FSL fits GLMs and sometimes the documentation is a bit lacking, here you go. *I use it for fitting my GLMs.* Works with design matrices and contrast matrices in `.txt` format (**not** in FSL's format!). This code is largely based on Ibai Diez's MATLAB code (thank you Ibai for letting me write my own Python version c:). All output maps are saved as float32. The list of output files, for each contrast:
   - `residuals.nii.gz` --> Residuals of the fitting
   - `betas.nii.gz` --> Beta coefficients of the fitting
   - `Tstat.nii.gz` --> T-statistic of the specific contrast
@@ -33,6 +33,8 @@ I use Linux. Tested on Arch, Debian and on WSL2 Debian.
   1. estimating the smoothness of your residuals.
   2. running the Monte Carlo simulations based on the smoothness to estimate the critical cluster sizes according to a set of p-values.
   3. correcting the clusters in your statistical maps using the critical cluster sizes.
+
+  The corrected map `NN2_2sided_results_mask.nii.gz` is built at **one** a-priori cluster-forming threshold (`--pthr`, two-sided, default 0.001) with NN2 (18) connectivity, and the parameters are written to `cluster_correction_info.txt`. Use `--save_all_pthr` to also get the per-threshold maps (exploratory only, never combine them), and `--recompute` to redo 3dFWHMx/3dClustSim after re-fitting the GLM.
 
 - `match_groups_in_table` --> (WIP) If you have two groups (in the same dataframe) and want to match them based on a continuous variable. *I use it for age matching*. It makes an initial match taking participants from the majority group until it arrives to the number of participants in the minority group. Then, it keeps adding the closest participants from the majority group and making statistical tests until it arrives to statistical significance. It returns a dataframe with the matched participants.
 

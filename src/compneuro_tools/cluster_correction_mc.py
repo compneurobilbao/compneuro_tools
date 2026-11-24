@@ -10,7 +10,6 @@ from scipy.stats import norm
 
 
 PVALS = [0.05, 0.04, 0.03, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0.0002, 0.0001]
-Z_THRESHOLDS = [float(norm.ppf(1 - (pval/2))) for pval in PVALS]
 
 
 def _setup_parser():
@@ -51,6 +50,32 @@ def _setup_parser():
         help="Number of iterations of MC simulation for cluster correction."
     )
 
+    parser.add_argument(
+        "--pthr",
+        type=float,
+        default=0.001,
+        help=("Primary (cluster-forming) two-sided voxelwise p-threshold, chosen a priori. "
+              f"Must be one of {PVALS}. The corrected map NN2_2sided_results_mask.nii.gz is built "
+              "ONLY at this threshold (cluster-level FWE alpha = 0.05). Default: 0.001."),
+    )
+
+    parser.add_argument(
+        "--save_all_pthr",
+        action="store_true",
+        default=False,
+        help=("Also save the corrected clusters at every other p-threshold as separate "
+              "acf_NN2_2sided_pval_<p>.nii.gz files (exploratory only: each one controls FWE "
+              "on its own, but looking at several of them, or their union, does not)."),
+    )
+
+    parser.add_argument(
+        "--recompute",
+        action="store_true",
+        default=False,
+        help=("Re-estimate the ACF (3dFWHMx) and re-run 3dClustSim even if acf.txt / "
+              "acf.NN2_2sided.1D already exist (e.g. after re-running fit_glm)."),
+    )
+
     return parser
 
 
@@ -85,6 +110,10 @@ def _check_args(parser):
         else:
             os.makedirs(args.output, exist_ok=True)
 
+
+    # Check that the primary threshold is one of the simulated ones
+    if not np.any(np.isclose(PVALS, args.pthr)):
+        raise ValueError(f"--pthr {args.pthr} is not one of the simulated p-values {PVALS}.")
 
     # Check if the number of iterations is positive
     if args.n_iterations <= 0:
@@ -152,7 +181,7 @@ def main():
         f"apptainer exec {binds} {afni_path} 3dFWHMx -mask {args.mask} -acf tmp.txt {args.residuals} | "
         "tail -n 1 | awk '{print $1\" \"$2\" \"$3}' > acf.txt"
     )
-    if os.path.exists(os.path.join(args.output, "acf.txt")):
+    if os.path.exists(os.path.join(args.output, "acf.txt")) and not args.recompute:
         print("[INFO] acf.txt already exists. Skipping smoothness estimation.")
     else:
         sp.run(command, shell=True, check=True)
@@ -169,7 +198,7 @@ def main():
     )
 
     acf_nn2_2sided_1d = os.path.join(args.output, "acf.NN2_2sided.1D")
-    if os.path.exists(acf_nn2_2sided_1d):
+    if os.path.exists(acf_nn2_2sided_1d) and not args.recompute:
         print("[INFO] acf.NN2_2sided.1D already exists. Skipping 3dClustSim.")
     else:
         sp.run(command, shell=True, check=True)
@@ -185,32 +214,45 @@ def main():
         "column_1": "cluster_size",
     })
 
-    # Initialize the output image
-    command = (
-        f"cd {args.output} && "
-        f"fslmaths {args.mask} -sub {args.mask} NN2_2sided_results_mask"
-    )
-    sp.run(command, shell=True, check=True)
-
-    # Correct the clusters
-    print("\n[INFO] Correcting the clusters...")
-    for z_thresh, (pvalue, cluster_size) in zip(Z_THRESHOLDS, acf_nn2_2sided_1d.rows()):
-        # Detect clusters at each Z_treshold
+    def _correct_at(pvalue, cluster_size, out_name):
+        """Keep the clusters of |Z| > z(p/2) (NN2 = 18-connectivity) with >= k voxels."""
+        z_thresh = float(norm.ppf(1 - (pvalue / 2)))
         print((f"[INFO] Filtering clusters at Z-threshold: {z_thresh:.4f}"
-               f" and p-value: {pvalue:.4f}, below {cluster_size} voxels"))
-
+               f" (two-sided p < {pvalue}), removing clusters below {cluster_size} voxels"))
         command = (
-            # Detect the clusters
             f"cd {args.output} && "
-            f"{fsl_bin}/fsl-cluster --in={args.zmap} --thresh={z_thresh} "
+            # Detect the clusters. --connectivity=18 matches the NN2 (faces + edges) table of
+            # 3dClustSim; FSL's default (26) would merge corner-touching clusters.
+            f"{fsl_bin}/fsl-cluster --in={args.zmap} --thresh={z_thresh} --connectivity=18 "
             f"--osize=Csize_{pvalue} --no_table && "
-            # Threshold the image
-            f"{fsl_bin}/fslmaths Csize_{pvalue} -thr {cluster_size} acf_NN2_2sided_pval_{pvalue}.nii.gz && "
-            # Add the clusters to the output image
-            f"{fsl_bin}/fslmaths NN2_2sided_results_mask -add acf_NN2_2sided_pval_{pvalue}.nii.gz -bin "
-            "NN2_2sided_results_mask.nii.gz"
+            # Keep clusters with size >= k and binarise
+            f"{fsl_bin}/fslmaths Csize_{pvalue} -thr {cluster_size} -bin {out_name}"
         )
         sp.run(command, shell=True, check=True)
+
+    # Find the cluster-size threshold for the primary p-threshold
+    table = {float(p): float(k) for p, k in acf_nn2_2sided_1d.rows()}
+    pthr = next(p for p in table if np.isclose(p, args.pthr))
+    k_thr = table[pthr]
+
+    # Corrected map at the single, a-priori primary threshold.
+    # NOTE: this used to be the union of the surviving clusters over all 11 thresholds,
+    # which does not control FWE at 0.05 (each threshold does so only on its own).
+    print("\n[INFO] Correcting the clusters at the primary threshold...")
+    _correct_at(pthr, k_thr, "NN2_2sided_results_mask.nii.gz")
+
+    with open(os.path.join(args.output, "cluster_correction_info.txt"), "w") as f:
+        f.write(f"zmap\t{args.zmap}\n")
+        f.write(f"pthr_two_sided\t{pthr}\n")
+        f.write(f"z_thresh\t{float(norm.ppf(1 - pthr / 2)):.6f}\n")
+        f.write(f"cluster_size_k\t{k_thr}\n")
+        f.write("connectivity\tNN2 (18)\n")
+        f.write("alpha_cluster\t0.05\n")
+
+    if args.save_all_pthr:
+        print("\n[INFO] Saving exploratory per-threshold maps (NOT combined)...")
+        for pvalue, cluster_size in table.items():
+            _correct_at(pvalue, cluster_size, f"acf_NN2_2sided_pval_{pvalue}.nii.gz")
 
     # Cleanup
     lookup_pattern = os.path.abspath(os.path.join(args.output, "acf.NN*"))

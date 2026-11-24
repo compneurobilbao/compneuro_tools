@@ -6,6 +6,8 @@ import numpy as np
 from argparse import ArgumentParser
 from nilearn import image, maskers
 
+from compneuro_tools._nifti import as_float32_img
+
 
 def _check_args(args):
     # Check if images are indeed images and that the file exists
@@ -163,7 +165,7 @@ def main():
 
     # Reshape the W-scores to the original image shape
     w_scores = masker.inverse_transform(w_scores)
-    w_scores_to_save = image.new_img_like(args.images, w_scores.get_fdata())
+    w_scores_to_save = as_float32_img(image.new_img_like(args.images, w_scores.get_fdata()))
     # Save the W-scores to the output directory
     w_scores_to_save.to_filename(os.path.join(args.output, "w_scores.nii.gz"))
     print(f"W-scores saved to {os.path.join(args.output, 'w_scores.nii.gz')}")

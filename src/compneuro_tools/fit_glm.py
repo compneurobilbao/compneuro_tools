@@ -8,6 +8,8 @@ from nilearn.maskers import NiftiMasker
 from scipy.stats import t, f, norm
 from scipy.special import ndtri
 
+from compneuro_tools._nifti import as_float32_img
+
 
 # Python version of Ibai Diez's GLM fitting script. Thanks Ibai for your MATLAB code c:
 def _setup_parser():
@@ -138,6 +140,12 @@ def fit_glm(mask_img,
     # Initialize the masker to convert the images to 2D (reliable way, instead of numpy reshapes)
     masker = NiftiMasker(mask_img=mask_img, standardize=False).fit()
 
+    def to_img(array):
+        # Always store statistical maps as float32: depending on the nilearn version,
+        # inverse_transform copies the (often uint8) header of the mask, which quantises
+        # betas/T/Z/p/residuals to ~256 values when saved.
+        return as_float32_img(masker.inverse_transform(array))
+
     # Covert the mask and input image to 2D using the masker
     mask_2d = masker.transform(mask_img)
     y = masker.transform(input_img) *  mask_2d
@@ -160,7 +168,7 @@ def fit_glm(mask_img,
     MSE = np.sum(np.square(residuals), axis=0) / df
 
     # Compute the residuals
-    residuals_im = masker.inverse_transform(residuals)
+    residuals_im = to_img(residuals)
 
     # Hypothesis Testing
     if not f_test:
@@ -173,26 +181,26 @@ def fit_glm(mask_img,
             var_beta = (contrast @ np.linalg.inv(X.T @ X) @ contrast.T)
             SE = np.sqrt((MSE + eps) * var_beta)
             T = (contrast @ betas) / SE
-            T_im = masker.inverse_transform(T)
+            T_im = to_img(T)
 
             # Log p-values (Uncorrected)
             logp = t.logsf(np.abs(T), df)
             pval_array = np.exp(logp) # Convert log p-values to p-values
             pval_array_pos = pval_array * np.where(T > 0, 1, 0)
             pval_array_neg = pval_array * np.where(T < 0, 1, 0)
-            pval_im_pos = masker.inverse_transform(pval_array_pos)
-            pval_im_neg = masker.inverse_transform(pval_array_neg)
+            pval_im_pos = to_img(pval_array_pos)
+            pval_im_neg = to_img(pval_array_neg)
 
             # Z-Stat
             Z = -ndtri(np.exp(logp))  # Convert log p-values to Z-scores, using the inverse of the normal CDF
             Z = np.where(T > 0, Z, -Z)  # Assign the correct sign to the Z-scores
             Z_array = Z * mask_2d
             Z_array = np.clip(Z_array, -50, 50)  # Clip Z-scores to avoid infinite values
-            Z_im = masker.inverse_transform(Z_array)
+            Z_im = to_img(Z_array)
 
             # Betas
             beta_array = betas * mask_2d
-            betas_im = masker.inverse_transform(beta_array)
+            betas_im = to_img(beta_array)
 
             # Put the results into the dictionary
             results[f"contrast_{i}"]["Zstat"] = Z_im
@@ -228,23 +236,23 @@ def fit_glm(mask_img,
         # Compute the F-statistic
         df = X.shape[0] - X.shape[1]  # Residual degrees of freedom
         F = (numerator_f_all_voxels / df_numerator) / MSE 
-        F_im = masker.inverse_transform(F)
+        F_im = to_img(F)
 
         # Uncorrected p-values
         pvals = f.sf(F, df_numerator, df)
         pval_array = np.zeros_like(mask_2d)
         pval_array[mask_2d > 0] = 1 - pvals
-        pval_im = masker.inverse_transform(pval_array)
+        pval_im = to_img(pval_array)
     
         # Z-Stat
         Z = norm.ppf(1 - pvals)
         Z = np.where(np.isfinite(Z), Z, 0)
         Z_array = Z * mask_2d
-        Z_im = masker.inverse_transform(Z_array)
+        Z_im = to_img(Z_array)
         
         # Betas
         beta_array = betas * mask_2d
-        betas_im = masker.inverse_transform(beta_array)
+        betas_im = to_img(beta_array)
     
         # Put the results into the dictionary
         results["contrast_0"]["Zstat"] = Z_im
